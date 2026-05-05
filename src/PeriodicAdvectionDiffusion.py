@@ -1,0 +1,181 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+import torch
+from tqdm import tqdm
+
+"""Plot setup"""
+sns.set_style("whitegrid")
+sns.set_color_codes(palette="colorblind")
+
+plt.rcParams.update({
+    "text.usetex": False,  # keep False to avoid requiring a LaTeX installation
+    "mathtext.fontset": "cm",  # Computer Modern (LaTeX-like)
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman", "DejaVu Serif"],
+    "axes.labelsize": 14,
+    "axes.titlesize": 16,
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+    "legend.fontsize": 12,
+})
+
+OUTPUT_DIR = Path(__file__).parent.parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+class PeriodicAdvectionDiffusion:
+    """Torch solver for u_t = D Delta u - v dot grad u on a periodic 2D grid."""
+
+    def __init__(
+        self,
+        n=64,
+        t_range=(0.0, 1.0),
+        n_t=1000,
+        x_range=(0.0, 2 * torch.pi),
+        y_range=(0.0, 2 * torch.pi),
+        velocity_field=None,
+        dtype=torch.float64,
+        device="cpu",
+    ):
+        self.n = n
+        self.t_range = t_range
+        self.n_t = n_t
+        self.delta_t = (t_range[1] - t_range[0]) / n_t
+        self.dtype = dtype
+        self.device = torch.device(device)
+        self.velocity_field = velocity_field or self.constant_velocity
+
+        self.x_vals = torch.linspace(
+            x_range[0],
+            x_range[1],
+            n + 1,
+            dtype=dtype,
+            device=self.device,
+        )[:-1]
+        self.y_vals = torch.linspace(
+            y_range[0],
+            y_range[1],
+            n + 1,
+            dtype=dtype,
+            device=self.device,
+        )[:-1]
+        self.X, self.Y = torch.meshgrid(self.x_vals, self.y_vals, indexing="xy")
+        self.h = self.X[0, 1] - self.X[0, 0]
+
+    def constant_velocity(self, x, y, t):
+        """Default velocity field v = (2, 0)."""
+        return 2 * torch.ones_like(x), torch.zeros_like(y)
+
+    def periodic_laplacian(self, u):
+        """Second-order centered periodic finite-difference Laplacian."""
+        u_xx = torch.roll(u, shifts=-1, dims=1) - 2 * u + torch.roll(u, shifts=1, dims=1)
+        u_yy = torch.roll(u, shifts=-1, dims=0) - 2 * u + torch.roll(u, shifts=1, dims=0)
+        return (u_xx + u_yy) / self.h**2
+
+    def periodic_gradient(self, u):
+        """Second-order centered periodic finite-difference gradient."""
+        u_x = (torch.roll(u, shifts=-1, dims=1) - torch.roll(u, shifts=1, dims=1)) / (2 * self.h)
+        u_y = (torch.roll(u, shifts=-1, dims=0) - torch.roll(u, shifts=1, dims=0)) / (2 * self.h)
+        return u_x, u_y
+
+    def rhs(self, u, t, diffusion_coefficient):
+        """Evaluate u_t = D Delta u - v dot grad u."""
+        velocity_x, velocity_y = self.velocity_field(self.X, self.Y, t)
+        u_x, u_y = self.periodic_gradient(u)
+        advection = velocity_x * u_x + velocity_y * u_y
+        diffusion = diffusion_coefficient * self.periodic_laplacian(u)
+        return diffusion - advection
+
+    def solve(self, initial_condition, diffusion_coefficient, store_history=True, show_progress=True):
+        """Solve forward in time with explicit Euler time stepping."""
+        u = initial_condition.to(dtype=self.dtype, device=self.device)
+        diffusion_coefficient = torch.as_tensor(
+            diffusion_coefficient,
+            dtype=self.dtype,
+            device=self.device,
+        )
+
+        history = [u] if store_history else None
+        iterator = range(self.n_t)
+        if show_progress:
+            iterator = tqdm(iterator, desc="Solving advection-diffusion equation")
+
+        for i in iterator:
+            t = self.t_range[0] + i * self.delta_t
+            u = u + self.delta_t * self.rhs(u, t, diffusion_coefficient)
+            if store_history:
+                history.append(u)
+
+        if store_history:
+            return torch.stack(history, dim=0)
+
+        return u
+
+    def gaussian_initial_condition(self):
+        """Default Gaussian initial condition used by the demo."""
+        return torch.exp(-(self.X**2 + (self.Y - torch.pi)**2))
+
+
+def plot_initial_final(solver, solution, output_path=OUTPUT_DIR / "advection_diffusion.svg"):
+    """Plot the initial and final solution states."""
+    initial = solution[0].detach().cpu().numpy()
+    final = solution[-1].detach().cpu().numpy()
+    x_plot = solver.X.detach().cpu().numpy()
+    y_plot = solver.Y.detach().cpu().numpy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    vmin = min(initial.min(), final.min())
+    vmax = max(initial.max(), final.max())
+
+    axes[0].contourf(x_plot, y_plot, initial, levels=50, cmap="icefire", vmin=vmin, vmax=vmax)
+    axes[0].set_title(f"Initial condition at t={solver.t_range[0]:.2f}")
+    axes[0].set_xlabel("x")
+    axes[0].set_ylabel("y")
+
+    final_plot = axes[1].contourf(
+        x_plot,
+        y_plot,
+        final,
+        levels=50,
+        cmap="icefire",
+        vmin=vmin,
+        vmax=vmax,
+    )
+    axes[1].set_title(f"Final condition at t={solver.t_range[1]:.2f}")
+    axes[1].set_xlabel("x")
+    axes[1].set_ylabel("y")
+
+    fig.suptitle(
+        "Periodic Advection-Diffusion Equation Solution\nGaussian Travelling to the Right",
+        fontsize=16,
+    )
+    fig.colorbar(final_plot, ax=axes, label="Concentration")
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def run_demo():
+    """Run the default example and save the initial/final plot."""
+    solver = PeriodicAdvectionDiffusion()
+    initial_condition = solver.gaussian_initial_condition()
+    diffusion_coefficient = torch.tensor(
+        0.25,
+        dtype=solver.dtype,
+        device=solver.device,
+        requires_grad=True,
+    )
+
+    solution = solver.solve(initial_condition, diffusion_coefficient)
+
+    loss = torch.mean(solution[-1]**2)
+    loss.backward()
+    print(f"d(loss)/dD = {diffusion_coefficient.grad.item():.6e}")
+
+    plot_initial_final(solver, solution)
+    return solver, solution
+
+
+if __name__ == "__main__":
+    run_demo()
