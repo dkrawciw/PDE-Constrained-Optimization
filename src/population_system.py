@@ -64,6 +64,16 @@ a_true = torch.tensor(a_vec, dtype=dtype)
 solution = integrate_rk2(x0_torch, a_true).detach()
 residual = lambda a: torch.sum((integrate_rk2(x0_torch, a) - solution)**2)
 
+"""Plot of True Solution Trajectory"""
+plt.figure(figsize=(10, 6))
+plt.plot(solution[:, 0], solution[:, 1], "-o", label="Phase Trajectory", linewidth=5, markersize=8)
+plt.xlabel("Prey Population")
+plt.ylabel("Predator Population")
+plt.title("Phase Plot of the Time Evolution of a Predator-Prey System")
+plt.legend()
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "population_trajectory_example.svg")
+
 a = torch.randn(5, dtype=dtype, requires_grad=True)
 optimizer = torch.optim.Adam([a], lr=1e-2)
 
@@ -142,18 +152,18 @@ plt.legend()
 plt.tight_layout()
 plt.savefig(OUTPUT_DIR / "trajectory_dm_gd.svg")
 
-# Plot the loss history
-plt.figure(figsize=(10, 6))
+# # Plot the loss history
+# plt.figure(figsize=(10, 6))
 
-plt.plot(loss_history_tm_gd, label="Loss Trajectory-Matching GD", linewidth=5)
-plt.plot(loss_history_dm_gd, label="Loss Derivative-Matching GD", linewidth=5)
-plt.yscale("log")
+# plt.plot(loss_history_tm_gd, label="Loss Trajectory-Matching GD", linewidth=5)
+# plt.plot(loss_history_dm_gd, label="Loss Derivative-Matching GD", linewidth=5)
+# plt.yscale("log")
 
-plt.xlabel("Epoch")
-plt.ylabel(r"$\log$ Loss")
+# plt.xlabel("Epoch")
+# plt.ylabel(r"$\log$ Loss")
 
-plt.title("Comparison of Various Methods for Parameter Estimation in ODEs")
+# plt.title("Comparison of Various Methods for Parameter Estimation in ODEs")
 
-plt.legend()
-plt.tight_layout()
-plt.savefig(OUTPUT_DIR / "loss_history.svg")
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig(OUTPUT_DIR / "loss_history.svg")
