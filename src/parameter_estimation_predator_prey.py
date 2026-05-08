@@ -240,7 +240,7 @@ true_parameters = solver.default_parameters()
 
 with torch.no_grad():
     solution = solver.solve(initial_condition, true_parameters)
-    solution = solution + torch.randn_like(solution, dtype=dtype)       # Adding random noise to the 
+    solution = solution + 1e-1*torch.randn_like(solution, dtype=dtype)       # Adding random noise to the 
 
 
 solution_derivative = finite_difference_derivative(solution, solver.delta_t)

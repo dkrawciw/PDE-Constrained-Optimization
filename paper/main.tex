@@ -1,0 +1,302 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{subcaption}
+\usepackage{svg}
+\usepackage{placeins}
+\usepackage{hyperref}
+
+\title{A Beginner's Guide to Parameter Estimation for ODE and PDE-Constrained Optimization Problems}
+\author{Daniel Krawciw}
+\date{May 8th, 2025}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper compares several introductory methods for estimating unknown parameters in differential-equation models from observed solution data. The methods considered are trajectory matching, derivative matching, and a simplified parameter cascades method. These approaches are tested on two examples: a nonlinear predator-prey system of ordinary differential equations and a two-dimensional advection-diffusion equation with an unknown diffusion coefficient. The experiments compare convergence as the number of gradient descent epochs increases and as the number of observed solution frames changes. The results show that trajectory matching is a reliable baseline but can be computationally expensive, while derivative matching is cheaper per optimization step but depends strongly on the quality of numerical derivative approximations. The parameter cascades method is more sensitive to implementation choices, especially the choice of basis functions and penalty parameters. Overall, the experiments illustrate practical tradeoffs between accuracy, computational cost, and numerical stability in basic parameter estimation problems.
+\end{abstract}
+
+\section{Introduction}
+\FloatBarrier
+
+\subsection{Motivation}
+
+After studying numerical partial differential equations and numerical optimization, I became interested in combining the two subjects. Mathematical models are introduced as a way to imperfectly predict real-world phenomena. Oftentimes, models require parameters to be known beforehand. These parameters can have physical interpretations such as diffusion rates, growth rates, reaction constants, or transport velocities.
+
+Working backwards, one can obtain these parameters using real-world data and constructed models. From what I learned, though, there are many ways to tackle this problem. This paper explores a few rudimentary methods that use gradient descent.
+
+\subsection{Literature Review}
+
+Looking at prior work in this area, it is clear that parameter estimation for dynamical systems is a well-established field. In fact, the study of estimating model parameters from observed data has been developed for several decades, making it a mature area of research. Ljung refers to this broader field as system identification, and his introductory work provides a useful foundation for understanding how mathematical models can be constructed, estimated, and validated using real-world data~\cite{ljung1998system}. In this paper, I focus on one particular part of that process: computing parameter estimates from observed data using several selected numerical methods.
+
+Because system identification is a mature field, much of the current research focuses on specialized methods designed for particular applications. For example, Bortz et al. develop WENDy, a weak-form method for estimating parameters in nonlinear ODE models, with particular relevance to mathematical biology~\cite{bortz2023direct}. Although methods such as WENDy arise from specific application contexts, they also illustrate broader strategies for estimating parameters in dynamical systems. In contrast, the goal of this paper is not to focus on a single application area, but rather to compare several parameter estimation methods in a more general setting.
+
+\subsection{Problem Setup - Population System}
+
+Generally, ODE/PDE-constrained optimization can be described with the following problem:
+\begin{equation}
+    \min_a J(u,a)
+    \label{eq:basic_PDECO}
+\end{equation}
+subject to
+\begin{equation}
+    F(u, a) = 0
+    \label{eq:basic_PDECO_constraint}
+\end{equation}
+where
+\begin{itemize}
+    \item $u = u(\underline{x},t)$ is the state variable.
+    \item $a$ is the unknown parameter
+    \item $F(u, a) = 0$ is the ODE/PDE constraint
+    \item $J(u,a)$ is the objective function
+\end{itemize}
+For our purposes, suppose we are given data $u_{\text{data}}(\underline{x},t)$. We can define an objective function as follows:
+\begin{equation}
+    J(u,a) = \int_0^T \int_\Omega \|u - u_{\text{data}}\|^2 d\underline{x} dt
+    \label{eq:basic_objective}
+\end{equation}
+Here, in equation \eqref{eq:basic_objective}, $\Omega$ represents the spatial domain of the problem and we assume the data was collected from time $0$ to $T$. This objective function \eqref{eq:basic_objective} accumulates the difference between approximated solutions and the given data, so naturally, we wish to minimize this objective function \eqref{eq:basic_PDECO}.
+
+The goal here is to explore different methods of estimating unknown parameters of differential equations given parts of the solution.
+
+The first example I explore is from Syafiie et al.~\cite{syafiie2025systems}. This predator-prey model is defined as follows:
+
+First, we let our two populations be represented by the following vector:
+\begin{equation}
+    \underline{p}(t) = \begin{bmatrix}
+        p_1(t)\\
+        p_2(t)
+    \end{bmatrix}
+    \label{eq:population_variable}
+\end{equation}
+After this, we can define our parameter vector as follows:
+\begin{equation}
+    \underline{a} = \begin{bmatrix}
+        a_1\\
+        \vdots\\
+        a_5
+    \end{bmatrix}
+    \label{eq:population_parameter}
+\end{equation}
+Observe in \eqref{eq:population_parameter} that the parameter is not just one value; it is a vector of values. This will not change much in the process of estimating parameters, but it is important to note. The actual system is
+\begin{equation}
+    \dot{\underline{p}} = \begin{bmatrix}
+        a_1p_1 - a_2 p_1 p_2\\
+        a_3p_2+a_4p_1p_2 - a_5 p_2^2
+    \end{bmatrix}
+    \label{eq:predator_prey_model}
+\end{equation}
+A key observation in equation \eqref{eq:predator_prey_model} is that this is a system of nonlinear ODEs.
+
+The following figure~\ref{fig:predator_prey_example} is an example phase diagram for a solution to the system \eqref{eq:predator_prey_model} given a random initial condition and a chosen value of $\underline{a}$.
+
+\begin{figure}[htbp]
+    \centering
+    \includesvg[width=0.8\linewidth]{population_trajectory_example}
+    \caption{Example numerical solution of the predator-prey equation from Syafiie et al.~\cite{syafiie2025systems}}
+    \label{fig:predator_prey_example}
+\end{figure}
+
+\subsection{Problem Setup - Advection-Diffusion}
+
+At this point, we will discuss how the advection-diffusion equation will be formulated. More specifically, we will be working with the non-conservative advection-diffusion equation, which is defined in equation \eqref{eq:advection_diffusion_model}.
+
+\begin{equation}
+    \dot u = D \Delta u - \underline{v} \cdot \nabla u
+    \label{eq:advection_diffusion_model}
+\end{equation}
+where
+\begin{itemize}
+    \item $u = u(\underline{x},t)$ is the state variable.
+    \item $\underline{v} = \underline{v}(\underline{x},t)$ is the velocity field acting on the state
+    \item $D$ is the diffusion coefficient (and the parameter we will approximate)
+\end{itemize}
+
+The following figure~\ref{fig:advection_diffusion_example} is an example of solving a two-dimensional advection-diffusion equation with a Gaussian shape as the initial condition with a velocity field that is uniform and moves to the right with periodic boundary conditions.
+
+\begin{figure}[htbp]
+    \centering
+    \includesvg[width=0.8\linewidth]{advection_diffusion_example}
+    \caption{Advection-diffusion evolution of a 2D Gaussian shape of concentration subjected to a right-facing velocity field.}
+    \label{fig:advection_diffusion_example}
+\end{figure}
+
+Here, there is only one variable $D$ that needs to be found, unlike in \eqref{eq:predator_prey_model}. As we will see later, this will not be a significant difference.
+
+\section{Methodology}
+\FloatBarrier
+
+The methods that I will be working with in this report are the following:
+\begin{enumerate}
+    \item Trajectory-Matching
+    \item Derivative-Matching
+    \item Parameter Cascades Method
+\end{enumerate}
+
+Trajectory matching estimates unknown parameters by repeatedly solving the model with a given initial condition and an initial parameter guess, then comparing the resulting numerical trajectory with the observed data. An optimization method, such as gradient descent, is then used to update the parameter values so that the simulated trajectory more closely matches the data. The objective function is the one defined at the beginning of this paper \eqref{eq:basic_objective}. This is perhaps the most natural starting point for parameter estimation, since it directly compares the model output with the observed system behavior.
+
+Derivative matching modifies the objective function in equation~\eqref{eq:basic_objective} by comparing the right-hand side of the differential equation with an approximation of the time derivative of the observed data. For a model of the form
+\[
+    \dot{u} = F(u,a),
+\]
+a derivative-matching objective can be written as
+\begin{equation}
+    J_{DM}(u,a)
+    =
+    \frac{1}{2}
+    \int_0^T \int_\Omega
+    \left\|F(u,a) - \dot{u}_{\mathrm{data}}\right\|^2
+    \,d\underline{x}\,dt,
+    \label{eq:derivative_matching_objective}
+\end{equation}
+where $\dot{u}_{\mathrm{data}}$ is obtained using a chosen finite difference approximation.
+
+An early version of this type of method was presented by Richard Bellman in 1969~\cite{bellman1969new}. Bellman's approach was similar in spirit, but instead of directly differentiating the raw data, he used a polynomial approximation to obtain a smoother representation of the observed solution. This allowed the derivative information to be estimated more reliably before solving a least-squares problem to determine the unknown parameters. While Bellman's method demonstrates the basic idea behind derivative matching, the approach in this paper more closely follows the work of Syafiie et al.~\cite{syafiie2025systems}.
+
+Finally, the parameter cascades method is from Cao et al.~\cite{cao2008estimating}. This method is similar to derivative matching in the sense that the objective compares a time derivative with the right-hand side of the ODE. However, instead of differentiating the observed data directly, the method first introduces a smooth approximation to the trajectory. This is useful because numerical derivatives of raw data can be unstable, especially if the data is noisy or only available at a small number of time points. An important note here is that this method will only be implemented for systems of ODEs, not for the PDE model.
+
+The main idea is to replace the unknown trajectory with a smooth basis expansion. For an ODE solution $u(t)$, define
+\begin{align}
+    \hat u(t) &= \Phi(t) C, \label{eq:u_hat}\\
+    \hat u^\prime(t) &= \Phi^\prime(t) C. \label{eq:u_hat_prime}
+\end{align}
+Here, $\Phi(t)$ is a row vector of chosen basis functions evaluated at time $t$, $\Phi^\prime(t)$ contains their time derivatives, and $C$ is a matrix of coefficients. In the population-system example, $\hat u(t)$ has two components, corresponding to the two populations. Notice that $u$ is only defined with respect to $t$ and not $\underline{x}$ because this method will not be applied to the PDE model in this paper.
+
+The parameter cascades approach introduces two types of unknowns:
+\begin{itemize}
+    \item $C$, the nuisance parameters that define the smooth fitted trajectory $\hat u(t)$,
+    \item $a$, the structural parameters in the differential equation $\dot u = F(u,a)$.
+\end{itemize}
+The fitted curve should do two things at once: stay close to the observed data and approximately satisfy the ODE. This leads to the objective function
+\begin{equation}
+    J(C,a)
+    =
+    \frac{1}{T}\int_0^T \|\hat u(t) - u_{\text{data}}(t) \|^2dt
+    +
+    \lambda \frac{1}{T} \int_0^T
+    \| \hat u^\prime(t) - F(\hat u(t), a) \|^2 dt.
+    \label{eq:cascade_parameter_objective}
+\end{equation}
+The first term measures the data fitting error. The second term measures the ODE residual of the fitted smooth curve. The parameter $\lambda \geq 0$ is the ``ODE-fidelity penalty parameter.'' It controls how strongly the smooth fitted trajectory is forced to satisfy the differential equation.
+
+The interpretation of $\lambda$ is important:
+\begin{itemize}
+    \item If $\lambda$ is small, then the method mainly tries to fit the observed data. The curve may look accurate, but the estimated parameters may not describe the dynamics well.
+    \item If $\lambda$ is large, then the fitted curve is forced to behave more like a solution of the ODE. This can improve parameter estimation, but if $\lambda$ is too large, the curve may fail to match the data.
+\end{itemize}
+Thus, $\lambda$ is not a physical parameter of the model. It is a tuning parameter that balances data fidelity against model fidelity.
+
+In the full parameter cascades method, the coefficient matrix $C$ is treated as an inner-level parameter and the ODE parameter $a$ is treated as an outer-level parameter. In this paper, I use a simpler version that still captures the main idea: $C$ and $a$ are optimized together using gradient-based optimization. This gives an iterative method that avoids repeatedly solving the ODE inside the loss function, while also avoiding direct finite-difference differentiation of the observed data. After an estimate $\hat a$ is obtained, the ODE can still be solved forward using $\hat a$ to check whether the recovered parameters reproduce the observed trajectory.
+
+\section{Experiments}
+\FloatBarrier
+
+\subsection{Population System}
+
+To begin, we will compare the trajectory-matching and derivative-matching method of approximating the true value of parameter $a$, which we will call $a^*$.
+
+Figure~\ref{fig:population_residuals_trajectory_derivative_epochs} displays the convergence of these methods as the number of training epochs increases in a log-log plot. Both converge by some power, which is an encouraging sign already.
+
+For trajectory-matching, on average, the convergence is linear, but there is clearly a section in the middle of the plot where convergence looks quadratic. After the quadratic section, the lines plateau at about $10^{-6}$.
+
+Similarly, for derivative-matching, the same on-average linear behavior can be seen, but a superlinear section in this curve can be seen. This trend is less-extreme than the trajectory-matching method, but is still clearly observable.
+
+\begin{figure}[htpb]
+    \centering
+    \includesvg[width=0.8\linewidth]{populationsystem_residual_methods_percentiles_by_epochs}
+    \caption{Comparing the convergence of trajectory-matching (left) and derivative-matching (right) parameter optimization algorithms with gradient descent. For each epoch count, 40 random perturbations of $a^*$ were run through the algorithm to obtain these percentile lines.}
+    \label{fig:population_residuals_trajectory_derivative_epochs}
+\end{figure}
+
+After looking at the convergence of trajectory-matching and derivative-matching, I wanted to see how the number of solution frames used in the objective function affects the final error. To do this, I generated a full numerical solution and uniformly sampled a certain number of frames from that solution. This began at $5$ frames and continued until I compared $100 \%$ of the generated frames, using increments of $10$ frames. For each run, I simulated $40$ randomly perturbed starting $a$ values to create these percentile plots. The following figure~\ref{fig:population_residuals_trajectory_derivative_frames} displays the convergence of these methods.
+
+\begin{figure}[htpb]
+    \centering
+    \includesvg[width=0.8\linewidth]{populationsystem_residual_methods_percentiles_by_frames}
+    \caption{Convergence of the residuals for each method as the number of solution frames used in the objective increases. For each frame count, $40$ trials with randomly perturbed starting parameter $a$ values were run to obtain the recorded residuals.}
+    \label{fig:population_residuals_trajectory_derivative_frames}
+\end{figure}
+
+Overall, figure~\ref{fig:population_residuals_trajectory_derivative_frames} suggests that when we have perfect data with no noise disturbance for a simple system of ODEs, then there are little-to-no gains from adding more data frames for either method.
+
+To further investigate when more data frames might help, I reran the simulations with added white noise to generate figure~\ref{fig:population_residuals_trajectory_derivative_frames_noise}.
+
+\begin{figure}[htpb]
+    \centering
+    \includesvg[width=0.8\linewidth]{populationsystem_residual_methods_percentiles_by_frames_with_noise}
+    \caption{Predator-prey parameter estimation residuals as the number of noisy observed solution frames increases. Gaussian white noise with scale $10^{-1}$ is added to the generated trajectory before fitting. The left panel shows trajectory matching and the right panel shows derivative matching; each curve gives the 25th, 50th, or 75th percentile of the final trajectory residual over 40 randomly perturbed initial guesses for $\underline{a}$.}
+    \label{fig:population_residuals_trajectory_derivative_frames_noise}
+\end{figure}
+
+\begin{figure}[htpb]
+    \centering
+    \begin{subfigure}{0.49\linewidth}
+        \centering
+        \includesvg[width=\linewidth]{cascade_residual_convergence_epochs}
+        \caption{Increasing training epochs.}
+        \label{fig:cascade_residual_convergence_epochs}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.49\linewidth}
+        \centering
+        \includesvg[width=\linewidth]{cascade_residual_convergence_frames}
+        \caption{Increasing observed solution frames.}
+        \label{fig:cascade_residual_convergence_frames}
+    \end{subfigure}
+    \caption{Convergence of the parameter cascades method on the predator-prey system. Both panels show the 25th, 50th, and 75th percentiles of the final trajectory residual over 40 randomly perturbed initial parameter guesses, with a reference $x^{-1}$ rate included for comparison.}
+    \label{fig:cascade_residual_convergence}
+\end{figure}
+
+\FloatBarrier
+\subsection{Advection-Diffusion}
+
+The convergence of the advection-diffusion example as the number of training epochs increases is displayed in figure~\ref{fig:advectiondiffusion_residual_methods_percentiles_by_epochs}.
+
+Trajectory matching seems to grow into superlinear convergence as the number of epochs increases, which is a bit different than the behavior seen in the system of ODEs example in figure~\ref{fig:population_residuals_trajectory_derivative_epochs}.
+
+For derivative matching, we observe that the convergence is linear at first and then flattens out. Discussion on why this occurs will appear in the conclusion section, but in essence, this has more to do with the spatial discretization of the PDE than the derivative-matching method itself.
+
+\begin{figure}[htpb]
+    \centering
+    \includesvg[width=0.8\linewidth]{advectiondiffusion_residual_methods_percentiles_by_epochs}
+    \caption{Advection-diffusion parameter estimation residuals as the number of gradient descent epochs increases. The left panel shows trajectory matching and the right panel shows derivative matching; each panel reports the 25th, 50th, and 75th percentiles of the final trajectory residual over 40 randomly perturbed initial guesses for the diffusion coefficient.}
+    \label{fig:advectiondiffusion_residual_methods_percentiles_by_epochs}
+\end{figure}
+
+Much like in the system of ODEs example, the convergence as the number of frames increases suggests that for a system with non-chaotic behavior, using more observed frames is not particularly helpful.
+
+\begin{figure}[htpb]
+    \centering
+    \includesvg[width=0.8\linewidth]{advectiondiffusion_residual_methods_percentiles_by_frames}
+    \caption{Advection-diffusion parameter estimation residuals as the number of observed solution frames used in the objective increases. The left panel shows trajectory matching and the right panel shows derivative matching; each curve gives a residual percentile over 40 randomly perturbed initial guesses for the diffusion coefficient.}
+    \label{fig:advectiondiffusion_residual_methods_percentiles_by_frames}
+\end{figure}
+
+\FloatBarrier
+\section{Conclusion}
+
+The experiments in this paper show the basic tradeoffs between three approaches to parameter estimation: trajectory matching, derivative matching, and parameter cascades. Of these, trajectory matching is the most direct method. It estimates the unknown parameter by repeatedly solving the model and comparing the simulated trajectory to the observed data. In the examples considered here, this made trajectory matching a reliable way to recover accurate parameter estimates. Its main weakness is computational cost: every gradient descent iteration requires a new numerical solve, so the method can become expensive when the forward model is large or high-fidelity.
+
+Derivative matching avoids this repeated forward solve by comparing the model right-hand side with an approximate time derivative of the observed data. This makes each optimization step much cheaper, and in these experiments it produced convergence behavior that was broadly similar to trajectory matching. The drawback is that the method depends on the quality of the numerical derivative. If the data are noisy or the discretization is coarse, the derivative approximation can limit the final accuracy. This effect is not very visible in figure~\ref{fig:population_residuals_trajectory_derivative_epochs}, where the ODE data are smooth and finely resolved, but it is more noticeable in figure~\ref{fig:advectiondiffusion_residual_methods_percentiles_by_epochs}, where the residuals begin to plateau after enough training epochs. A natural follow-up experiment would be to repeat the advection-diffusion tests with increasingly fine spatial discretizations to check whether this plateau moves lower as the PDE discretization improves.
+
+The comparison between the predator-prey ODE and the advection-diffusion PDE also shows that the same parameter-estimation ideas can be applied in both settings. The PDE example is slower, as expected, because discretizing the PDE in space turns it into a larger system of ODEs. Still, the qualitative behavior of trajectory matching and derivative matching was similar across the two models.
+
+The parameter cascades method was the least successful in these experiments, but the results should be interpreted carefully. The implementation used here is a simplified version of the full method, and it used Gaussian radial basis functions for the smooth trajectory approximation. Cao et al.~\cite{cao2008estimating} use B-splines, which are better suited to representing smooth curves with local control. For that reason, the weak performance here does not necessarily indicate a weakness of the parameter cascades method itself. It suggests that the choice of basis functions, the penalty parameter $\lambda$, and the optimization strategy all matter substantially.
+
+The frame comparison for the parameter cascades method, shown in figure~\ref{fig:cascade_residual_convergence_frames}, was especially interesting because the residuals increased as more observed frames were used. One possible explanation is that the chosen RBF basis was not flexible enough to fit the trajectory while also satisfying the ODE residual term. With more observation points, this tension becomes harder to hide. A better basis, such as B-splines, along with tuning $\lambda$ more systematically, would be a good next step.
+
+Overall, these experiments support trajectory matching as the safest baseline method, derivative matching as a cheaper but more derivative-sensitive alternative, and parameter cascades as a promising method whose performance depends strongly on implementation details. Future work should test these methods with noisy data, finer PDE discretizations, different basis functions, and more systematic choices of optimization hyperparameters.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\section*{Code Availability}
+
+  The code used to generate the numerical experiments and figures in this paper is available at
+  \url{https://github.com/dkrawciw/PDE-Constrained-Optimization}.
+
+\end{document}
