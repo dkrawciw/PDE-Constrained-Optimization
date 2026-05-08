@@ -87,17 +87,24 @@ def cascade_loss(Phi, Phi_prime, C, raw_a, data, lambda_ode):
     return total_loss, data_loss, ode_loss, a, u_hat
 
 
+def positive_parameter_perturbation(a, noise_scale):
+    raw_a = inverse_softplus(a)
+    return torch.nn.functional.softplus(raw_a + noise_scale * torch.randn_like(raw_a))
+
+
 def fit_gradient_method(loss_fn, a_start, epochs, lr):
-    a = a_start.clone().detach().requires_grad_(True)
-    optimizer = torch.optim.Adam([a], lr=lr)
+    raw_a = inverse_softplus(a_start).clone().detach().requires_grad_(True)
+    optimizer = torch.optim.Adam([raw_a], lr=lr)
 
     for _ in range(epochs):
         optimizer.zero_grad()
+        a = torch.nn.functional.softplus(raw_a)
         loss = loss_fn(a)
         loss.backward()
         optimizer.step()
 
     with torch.no_grad():
+        a = torch.nn.functional.softplus(raw_a)
         final_loss = loss_fn(a)
 
     return a.detach(), final_loss.item()
@@ -167,7 +174,7 @@ with torch.no_grad():
 
 solution_derivative = finite_difference_derivative(solution, solver.delta_t)
 a_start_list = [
-    a_true + 0.5 * torch.randn(5, dtype=dtype)
+    positive_parameter_perturbation(a_true, noise_scale=0.5)
     for _ in range(TRIALS_PER_EPOCH_COUNT)
 ]
 
