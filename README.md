@@ -1,6 +1,12 @@
 # PDE Constrained Optimization
 
-Daniel Krawciw
+**School:** Colorado School of Mines
+
+**Class:** Numerical Optimization
+
+**Professor:** Dr. Samy Wu Fung
+
+**Author:** Daniel Krawciw
 
 ## Project Description
 
