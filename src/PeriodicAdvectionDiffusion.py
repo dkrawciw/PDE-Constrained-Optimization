@@ -37,7 +37,7 @@ class PeriodicAdvectionDiffusion:
         self,
         n=64,
         t_range=(0.0, 1.0),
-        n_t=1000,
+        n_t=200,
         x_range=(0.0, 2 * torch.pi),
         y_range=(0.0, 2 * torch.pi),
         velocity_field=None,
@@ -93,7 +93,7 @@ class PeriodicAdvectionDiffusion:
         diffusion = diffusion_coefficient * self.periodic_laplacian(u)
         return diffusion - advection
 
-    def solve(self, initial_condition, diffusion_coefficient, store_history=True, show_progress=True):
+    def solve(self, initial_condition, diffusion_coefficient, store_history=True, show_progress=False):
         """Solve forward in time with explicit Euler time stepping."""
         u = initial_condition.to(dtype=self.dtype, device=self.device)
         diffusion_coefficient = torch.as_tensor(
